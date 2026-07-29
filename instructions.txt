@@ -1,0 +1,52 @@
+##Instructions (assuming you're using mac or linux)
+
+
+1) Extract the zip archive. I'm assuming it's extracted to the desktop (it doesn't matter where and you can move later)
+
+2) Change directory to the new folder,
+cd ~/Desktop/finches_zenodo/
+
+3) Create a virtual environment in the finches_zenodo directory. If you aren't familiar with it, I strongly recommend using a separate virtual environment for each coding project (see https://realpython.com/python-virtual-environments-a-primer/). I wrote and ran the code using python 3.6.4, so I recommend creating the virtual environment using that version of python. For me that meant running
+python3.6 -m venv ./venv
+
+4) Activate the virtual environment (everything from this point on should be run with the virtual environment activated)
+source ./venv/bin/activate
+
+6) Install all required packages (apart from ews) using
+pip install -r requirements.txt 
+
+7) Install ews 
+pip install ./py_earlywarnings
+
+8) If you want, you can now delete ./py_earlywarnings
+
+9) To compile the simulator (written in c++) run 
+cd ./SEIR-Simulator-0.2.5/
+make seir_simulator_gamma
+
+10) Change back to the root directory
+cd ../
+
+11) With the virtual environment active you can now run all the code using the bash script run_python_scripts.sh. First you need to allow for it to be executed as a program,
+chmod +x ./run_python_scripts.sh 
+
+12) This is a little hacky (I would structure the project differently if I rewrote it today). Add finches_zenodo to the python path (so you can load files in the ./py subdirectory as if it was a module)
+export PYTHONPATH="${PYTHONPATH}:./"
+
+13) Run analysis and produce figures
+./run_python_scripts.sh 
+
+Note: that the entire project takes about 10 hours to run on a laptop (I used a macbook with 4 cores). For testing you can change the number of simulated time series by changing the value of n_samples on line 25 of ./py/workflow.py. I suggest n_samples=100 for testing.
+
+Just the commands (executed in root directory of the project):
+
+python3.6 -m venv ./venv
+source ./venv/bin/activate
+pip install -r requirements.txt 
+pip install ./py_earlywarnings
+cd ./SEIR-Simulator-0.2.5/
+make seir_simulator_gamma
+cd ../
+chmod +x ./run_python_scripts.sh 
+export PYTHONPATH="${PYTHONPATH}:./"
+./run_python_scripts.sh 
