@@ -37,7 +37,7 @@ const int Le = 1;
 const int Li = 1;
 // Number of reaction channels:
 const int a_no = 6 + 2*Le + 2*Li;
-// Number of species:
+// Number of species, SEIRV + two for intermediate exposed + two for intermediate infectious
 const int s_no = 6 +Le + Li;
 
 
@@ -103,11 +103,6 @@ struct Parameters{
     double R0_ou_var=0.00001;
     double R0_lower_limit=0;
     double R0_upper_limit=1;
-
-
-
-
-
 
 	// Set model parameters using argc and argv inputs
 	void set_model_parameters(int c, char **v){
@@ -253,15 +248,10 @@ struct Parameters{
             if(ts.substr(0, 5).compare("R0_u=") == 0){
 		       R0_upper_limit = std::stof(ts.substr(5));
 		    }
-
-
-
 		}
-
 	    Tend = Tstart + Tdur;
 	}
 	std::vector<double> beta_ts;
-
 
 	double seasonal_forcing(double t){
 	    return(1+ seasonality_amplitude*cos(2*M_PI*(t-peak_day)/365.));
@@ -304,7 +294,6 @@ struct Parameters{
 		}
 	}
 
-//
     double ramp_function(double t, double duration, double initial_time,
                          double initial_value, double final_value){
 
@@ -324,25 +313,28 @@ struct Parameters{
 
 	//Vaccine uptake function:
 	double vaccine_uptake(double t){
+		// fraction of newborns vaccinated.
 	    return(ramp_function(t, v_rd,v_rs,v_i, v_f));
-	   }
-
+	}
 
 	double eta_function(double t){
+		// importation rate (infectious individuals arriving from outside the population)
 	    return(ramp_function(t,eta_rd,eta_rs,eta_i,eta_f));
 	}
 
 	double rep_prob_function(double t){
+		// reporting probability.
 	    return(ramp_function(t,rp_rd,rp_rs,rp_i,rp_f));
 	}
 
-
 	double pop_function(double t){
+		// total population
 	    return(ramp_function(t,N_rd,N_rs,N_i,N_f));
 	}
 
-
 	double R0_function(double t){
+		// the basic reproduction 
+		//  supports multiple modes
 	    double R0;
         if(R0_ramp == 0){
             R0 = ramp_function(t,R0_rd,R0_rs,R0_i,R0_f);
@@ -372,16 +364,15 @@ struct Parameters{
                 R0 = beta_ts[int((t-R0_rs-Tstart)/dte)];
             }
         }
-
+		// The result is then multiplied by forcing_function(t) (seasonal or term-time forcing)
+		// so the final R0(t) is the product of the slow trend and the fast seasonal cycle.
 	    return(R0*forcing_function(t));
 	}
 
 	double beta_function(double t){
+		// converts R0 to the transmission rate beta(t) = R0(t) * (gamma + mu) * (rho + mu)/rho
 	    return(((gamm + mu)*(rho+mu)/rho)*R0_function(t));
 	}
-
-
-
 
     int reported_cases(const gsl_rng * r,double cases, double t){
         //Note: parameterisation of gsl negative binomial is that it returns
@@ -390,11 +381,6 @@ struct Parameters{
         return(gsl_ran_negative_binomial(r, nb_p,
                                   rep_dispersion));
     }
-
-
-
-
-
 
 	//check that beta is correctly reset to initial value...
 	void set_initial_conditions(double n[s_no]){
@@ -420,10 +406,10 @@ struct Parameters{
         n[5] = 0;
 
         //n[s_no] = {S0, E0,I0, N - S0 - E0 -I0- V0, V0,0};
-
 	}
 
 	// Reaction rates: SEIR model with varying vaccine uptake
+	// C++ note: passing in n[s_no] and a[a_no] is same as passing pointers
 	void reactions_update(double n[s_no],  double a[a_no], double t){ // double vaccine_uptake, double beta){
 		// Birth of susceptible
 		a[0] = (1-vaccine_uptake(t))*mu*pop_function(t);
@@ -440,6 +426,20 @@ struct Parameters{
 		a[5] = vaccine_uptake(t)*mu*pop_function(t);
 
 
+		// The two for loops build in the linear chain trick (method of stages),
+		// which lets the exposed and infectious periods be Erlang/Gamma-distributed
+		// instead of exponential, while keeping the whole thing a Markov chain 
+		// so Gibson–Bruck/MNRM still applies exactly.
+
+		// Basically, a[2]=rho*n[1] means an individual leaves E after an Exponential time
+		// memoryless, so it's just as likely to leave in the next instant whether they entered E a minute ago or a month ago.
+		// Real latent/infectious periods are clustered around their mean. 
+		// The fix is to split E into Le stages E1, E2, ..., ELe, each an independent exponential stage with rate
+		// The sum of Le many IID Exponential(rho*Le) is exactly the Erlang distribution.
+		// So the mean latent period stays 1/rho but the variance shrinks as Le grows
+
+		// The set_v() does the corresponding effects vector
+
 		// Exposed to infectious
         for(int i = 1; i <=Le; i++){
 			a[5+i] = rho*n[5+i]*Le;
@@ -454,54 +454,55 @@ struct Parameters{
 	}
 
 	std::array<std::array<int, s_no>, a_no>  set_v(){
+
+		// the std::array<int, s_no> is a fixed-size array of s_no ints
+		// Nesting it, std::array<std::array<int, s_no>, a_no>, 
+		// gives an array of a_no such rows: a 2D grid with a_no rows and s_no columns.
+		// here you write v[nu][i] directly (row nu, column i)
 		std::array<std::array<int, s_no>, a_no> v;
-			v[0] = {1,0,0,0,0,0};
-			v[1] = {-1,1,0,0,0,0};
-			v[1][6] = 1;
-			v[2] = {-1,0,0,0,0,0};
-			v[3]= {0,0,0,-1,0,0};
-			v[4]= {0,0,0,0,-1,0};
-			v[5]= {0,0,0,0,1,0};
+		v[0] = {1,0,0,0,0,0}; // since there are actually 8 compartments, this is {1,0,0,0,0,0,0,0} according to C++ rules
+		v[1] = {-1,1,0,0,0,0}; // v[1] is reaction 1, infection, The short list says "S−1, E-aggregate+1" (columns 0 and 1), zero-filling the rest as above
+		v[1][6] = 1; // add the exposed to the first intermediate exposed class E1 as well
+		v[2] = {-1,0,0,0,0,0};
+		v[3]= {0,0,0,-1,0,0};
+		v[4]= {0,0,0,0,-1,0};
+		v[5]= {0,0,0,0,1,0};
 
-			// Exposed stages
-		    for(int i = 1; i <Le; i++){
-				//v[5+i] = {0,0,0,0,0,0};
-				v[5+i][5+i] = -1;
-				v[5+i][5+i+1] = 1;
-			}
+		// Exposed stages
+		for(int i = 1; i <Le; i++){
+			//v[5+i] = {0,0,0,0,0,0};
+			v[5+i][5+i] = -1;
+			v[5+i][5+i+1] = 1;
+		}
 
-			// Exposed to infectious
-			v[5+Le] = {0,-1,1,0,0,0};
-			v[5+Le][5+Le] = -1;
-			v[5+Le][6+Le] = 1;
+		// Exposed to infectious
+		v[5+Le] = {0,-1,1,0,0,0}; // aggregate: E_total -1, I_total +1
+		v[5+Le][5+Le] = -1; // leaving stage E_{Le} specifically
+		v[5+Le][6+Le] = 1; // entering stage I_1 specifically
 
-			// Exposed death
-			for(int i = 1; i <=Le; i++){
-				v[5+i + Le] = {0,-1,0,0,0,0};
-				v[5+i + Le][5+i] = -1;
-			}
-			// Infectious stages
-		    for(int i = 1; i <Li; i++){
-				//v[5+2*Le+i] = {0,0,0,0,0,0};
-				v[5+2*Le+i][5+Le+i] = -1;
-				v[5+2*Le+i][5+Le+i+1] = 1;
-			}
-			// Recovery
-			v[5+2*Le+Li] = {0,0,-1,1,0,1};
-			v[5+2*Le+Li][5+Le+Li] = -1;
+		// Exposed death
+		for(int i = 1; i <=Le; i++){
+			v[5+i + Le] = {0,-1,0,0,0,0};
+			v[5+i + Le][5+i] = -1;
+		}
+		// Infectious stages
+		for(int i = 1; i <Li; i++){
+			//v[5+2*Le+i] = {0,0,0,0,0,0};
+			v[5+2*Le+i][5+Le+i] = -1;
+			v[5+2*Le+i][5+Le+i+1] = 1;
+		}
+		// Recovery
+		v[5+2*Le+Li] = {0,0,-1,1,0,1};
+		v[5+2*Le+Li][5+Le+Li] = -1;
 
-			// Death of infectious
-		    for(int i = 1; i <=Li; i++){
-				v[5 +2*Le+i + Li] = {0,0,-1,0,0,0};
-				v[5+2*Le +i + Li][5+Le+i] = -1;
-			}
+		// Death of infectious
+		for(int i = 1; i <=Li; i++){
+			v[5 +2*Le+i + Li] = {0,0,-1,0,0,0};
+			v[5+2*Le +i + Li][5+Le+i] = -1;
+		}
 
-			return  v;
-	
-
+		return  v;
     }
-
-
 
 	//As presently coded the set_beta_* functions actually generate timeseries for R0, not beta
 	//hence in get_beta beta_ts is multiplied by gamm.
@@ -514,8 +515,6 @@ struct Parameters{
         }
     }
 
-
-	
 	void set_beta_brownian_bridge(gsl_rng * rng){
 		int n = int(R0_rd/dte);
 		double rt_interval = sqrt(dte*bb_var);

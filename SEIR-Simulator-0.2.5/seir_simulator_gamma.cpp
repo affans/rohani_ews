@@ -13,24 +13,22 @@
 #include <string>
 #include <array>
 
-
-
 // Need to fix this so model doesn't need recompiling for each parameter combination
 const std::string folder = "./";
-
-
 std::ofstream out;
 
 int main(int argc, char **argv)
 {
-
     //Initialise model parameters
     Parameters par;
     par.set_model_parameters(argc, argv);
+
+    // v is the stoichiometry matrix v[k][i] = change in species i when reaction k fires
+    // the set_v() function builds this programmatically
     std::array<std::array<int, s_no>, a_no> v = par.set_v();
-
-
-	srand(par.seed);
+	
+    // random number generation
+    srand(par.seed);
 	gsl_rng * rng = gsl_rng_alloc (gsl_rng_taus);
 	gsl_rng_set (rng, rand());
 
@@ -44,43 +42,47 @@ int main(int argc, char **argv)
         << "reporting_frac" << ","
         << "uptake" << "," << "R0" << ","<< "eta" << "," << "run" << std::endl;
 
-
     for(int run = 1; run <= par.runs; run++){
-
-
         /**** algorithm variables: ****/
-        double t = 0;
-        double a[a_no];
-        double n[s_no];
-        int nu;
-        double dt;
+
+        // Per-run initialization
+        double t = 0; // current simulated (real) time
+        double a[a_no]; // propensity vector, filled each step by reactions_update()
+        double n[s_no]; // species/state vector so e.g, n[2] is the number of infected individuals
+        int nu; // 	index of the reaction chosen to fire next
+        double dt; // 	waiting time until the next reaction
         double te = 0;
 
-        par.set_beta(rng);
-        par.set_initial_conditions(n);
-
+        par.set_beta(rng); // linear, BB, or OU based on the R0_ramp parameter
+        par.set_initial_conditions(n); // set initial conditions for the state vector, SEIRV
 
         // Internal Poisson processes, internal clocks, next-firing times:
+        // The three per-reaction arrays: Pk: next Poisson threshold,  Tk: internal clock,  Dk: candidate wait time.
+        // P[a_no]: next unrealized arrival ("internal time") of channel k's unit-rate Poisson process
+        // T[a_no]: channel k's internal clock, i.e. integrated propensity so far
+        // D[a_no]: candidate waiting time for channel k
         double P[a_no], T[a_no], D[a_no];
-
-  
-        //Next-reaction method algorithm
+        
+        //Next-reaction method algorithm: implementation of the MNRM as found in Anderson (2008)
 
         //Initialisation of internal Poisson processes and internal clocks:
         for(int k = 0; k < a_no; k++){
-            P[k] = -log((double)rand()/RAND_MAX);
+            // Initialize each reaction's Poisson process with its first arrival time
+            P[k] = -log((double)rand()/RAND_MAX); // this is P[k] ~ Exp(1)
             T[k] = 0;
         }
 
-        while(t < par.Tend){
-            // Updating the reaction rates:
-            par.reactions_update(n,  a, t);
+        while(t < par.Tend){ // Each iteration of while(t < par.Tend) is one reaction event — one jump of the CTMC.
+            
+            // Updating the reaction rates, fills a[k] from the current state
+            par.reactions_update(n, a, t); 
+
             // Calculating which reaction fires next:
-            dt = par.Tend;
+            dt = par.Tend;                         //  initialize Δ to a huge value
             for(int k = 0; k < a_no; k++){
-                D[k] = (P[k] - T[k])/a[k];
-                if(D[k] <= dt && a[k] > 10e-20){
-                    dt = D[k]; nu = k;
+                D[k] = (P[k] - T[k])/a[k];         // Δ_k = (P_k − T_k) / a_k
+                if(D[k] <= dt && a[k] > 10e-20){   // keep the minimum, skip zero-rate reactions
+                    dt = D[k]; nu = k;             // Δ = Δ_μ, μ = argmin
                 }
             }
 
@@ -103,10 +105,11 @@ int main(int argc, char **argv)
                 te += par.dte;
             }
 
+            // Fire the reaction: this advances the time, Replenish the fired reaction's Poisson process, Apply the stoichiometry
             // Updating the internal Possion process and system state according to the reaction with fired:
-            t = t+ dt;
-            P[nu] -= log(gsl_rng_uniform_pos (rng) );
-            for(int i = 0; i < s_no; i++) n[i] += v[nu][i];
+            t = t+ dt;   // t ← t + Δ            
+            P[nu] -= log(gsl_rng_uniform_pos (rng) );  // P_μ ← P_μ + Exp(1)
+            for(int i = 0; i < s_no; i++) n[i] += v[nu][i];  // n ← n + ν_μ
 
 
         // Internal clocks are updated:
